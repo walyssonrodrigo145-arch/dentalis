@@ -1,9 +1,16 @@
-import React from "react"
+import React, { useEffect } from "react"
 import { Outlet } from "react-router-dom"
 import { Sidebar } from "./Sidebar"
 import { Header } from "./Header"
+import { useDentalisStore } from "../../store/useDentalisStore"
 
 export const AppLayout: React.FC = () => {
+  const fetchData = useDentalisStore((state) => state.fetchData)
+
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
+
   return (
     <div className="flex min-h-screen w-full bg-background overflow-hidden">
       <Sidebar />

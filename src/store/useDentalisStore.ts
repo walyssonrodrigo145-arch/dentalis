@@ -90,25 +90,26 @@ interface DentalisStore {
   selectedPatientId: string | null
 
   // Actions
+  fetchData: () => Promise<void>
   setSelectedPatientId: (id: string | null) => void
-  addPatient: (patient: Omit<Patient, "id" | "teeth">) => void
-  updatePatient: (id: string, data: Partial<Patient>) => void
-  deletePatient: (id: string) => void
-  updateToothStatus: (patientId: string, toothNumber: number, status: ToothState["status"], notes?: string) => void
+  addPatient: (patient: Omit<Patient, "id" | "teeth">) => Promise<void>
+  updatePatient: (id: string, data: Partial<Patient>) => Promise<void>
+  deletePatient: (id: string) => Promise<void>
+  updateToothStatus: (patientId: string, toothNumber: number, status: ToothState["status"], notes?: string) => Promise<void>
 
-  addAppointment: (appointment: Omit<Appointment, "id">) => void
-  updateAppointmentStatus: (id: string, status: Appointment["status"]) => void
-  deleteAppointment: (id: string) => void
+  addAppointment: (appointment: Omit<Appointment, "id">) => Promise<void>
+  updateAppointmentStatus: (id: string, status: Appointment["status"]) => Promise<void>
+  deleteAppointment: (id: string) => Promise<void>
 
-  addTransaction: (transaction: Omit<FinanceTransaction, "id">) => void
-  updateTransactionStatus: (id: string, status: FinanceTransaction["status"]) => void
+  addTransaction: (transaction: Omit<FinanceTransaction, "id">) => Promise<void>
+  updateTransactionStatus: (id: string, status: FinanceTransaction["status"]) => Promise<void>
 
-  addStockItem: (item: Omit<StockItem, "id">) => void
-  updateStockItem: (id: string, data: Partial<StockItem>) => void
-  deleteStockItem: (id: string) => void
+  addStockItem: (item: Omit<StockItem, "id">) => Promise<void>
+  updateStockItem: (id: string, data: Partial<StockItem>) => Promise<void>
+  deleteStockItem: (id: string) => Promise<void>
 
-  addTeamMember: (member: Omit<TeamMember, "id">) => void
-  updateTeamMember: (id: string, data: Partial<TeamMember>) => void
+  addTeamMember: (member: Omit<TeamMember, "id">) => Promise<void>
+  updateTeamMember: (id: string, data: Partial<TeamMember>) => Promise<void>
 }
 
 // Helper para gerar dentes iniciais (11-18, 21-28, 31-38, 41-48)
@@ -457,132 +458,309 @@ export const useDentalisStore = create<DentalisStore>((set) => ({
   teamMembers: initialTeamMembers,
   selectedPatientId: "pat-1", // Começa com o Carlos Eduardo selecionado para a tela de pacientes já abrir rica
 
+  fetchData: async () => {
+    try {
+      const [resPatients, resApts, resFinance, resStock, resTeam] = await Promise.all([
+        fetch("/api/patients"),
+        fetch("/api/appointments"),
+        fetch("/api/finance"),
+        fetch("/api/stock"),
+        fetch("/api/team"),
+      ])
+
+      if (!resPatients.ok || !resApts.ok || !resFinance.ok || !resStock.ok || !resTeam.ok) {
+        throw new Error("Resposta da API inválida.")
+      }
+
+      const patients = await resPatients.json()
+      const appointments = await resApts.json()
+      const transactions = await resFinance.json()
+      const stockItems = await resStock.json()
+      const teamMembers = await resTeam.json()
+
+      set({
+        patients,
+        appointments,
+        transactions,
+        stockItems,
+        teamMembers,
+        selectedPatientId: patients[0]?.id || null,
+      })
+      console.log("Dados sincronizados com o PostgreSQL com sucesso.")
+    } catch (err) {
+      console.warn("API offline ou DATABASE_URL não configurada. Operando no modo em-memória offline com dados padrão.", err)
+    }
+  },
+
   setSelectedPatientId: (id) => set({ selectedPatientId: id }),
 
-  addPatient: (patient) =>
-    set((state) => {
-      const newPatient: Patient = {
-        ...patient,
-        id: `pat-${Date.now()}`,
-        teeth: generateInitialTeeth(),
-      }
-      return { patients: [newPatient, ...state.patients] }
-    }),
+  addPatient: async (patient) => {
+    const newPatient: Patient = {
+      ...patient,
+      id: `pat-${Date.now()}`,
+      teeth: generateInitialTeeth(),
+    }
+    set((state) => ({ patients: [newPatient, ...state.patients] }))
+    try {
+      await fetch("/api/patients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newPatient),
+      })
+    } catch (e) {
+      console.error("Erro ao salvar paciente no banco de dados:", e)
+    }
+  },
 
-  updatePatient: (id, data) =>
+  updatePatient: async (id, data) => {
     set((state) => ({
       patients: state.patients.map((p) => (p.id === id ? { ...p, ...data } : p)),
-    })),
+    }))
+    try {
+      await fetch("/api/patients", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...data }),
+      })
+    } catch (e) {
+      console.error("Erro ao atualizar paciente no banco de dados:", e)
+    }
+  },
 
-  deletePatient: (id) =>
+  deletePatient: async (id) => {
     set((state) => ({
       patients: state.patients.filter((p) => p.id !== id),
       selectedPatientId: state.selectedPatientId === id ? null : state.selectedPatientId,
-    })),
+    }))
+    try {
+      await fetch(`/api/patients?id=${id}`, {
+        method: "DELETE",
+      })
+    } catch (e) {
+      console.error("Erro ao excluir paciente no banco de dados:", e)
+    }
+  },
 
-  updateToothStatus: (patientId, toothNumber, status, notes) =>
-    set((state) => ({
-      patients: state.patients.map((p) => {
+  updateToothStatus: async (patientId, toothNumber, status, notes) => {
+    let updatedPatient: Patient | null = null
+    set((state) => {
+      const updatedPatients = state.patients.map((p) => {
         if (p.id === patientId) {
           const currentTooth = p.teeth[toothNumber] || { id: toothNumber, number: toothNumber, status: "saudavel" }
-          return {
-            ...p,
-            teeth: {
-              ...p.teeth,
-              [toothNumber]: { ...currentTooth, status, notes: notes !== undefined ? notes : currentTooth.notes },
-            },
+          const newTeeth = {
+            ...p.teeth,
+            [toothNumber]: { ...currentTooth, status, notes: notes !== undefined ? notes : currentTooth.notes },
           }
+          updatedPatient = { ...p, teeth: newTeeth }
+          return updatedPatient
         }
         return p
-      }),
-    })),
-
-  addAppointment: (appointment) =>
-    set((state) => {
-      const newAppointment: Appointment = {
-        ...appointment,
-        id: `apt-${Date.now()}`,
+      })
+      return { patients: updatedPatients }
+    })
+    if (updatedPatient) {
+      try {
+        await fetch("/api/patients", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: patientId, teeth: (updatedPatient as Patient).teeth }),
+        })
+      } catch (e) {
+        console.error("Erro ao atualizar odontograma no banco de dados:", e)
       }
-      return { appointments: [...state.appointments, newAppointment] }
-    }),
+    }
+  },
 
-  updateAppointmentStatus: (id, status) =>
+  addAppointment: async (appointment) => {
+    const newAppointment: Appointment = {
+      ...appointment,
+      id: `apt-${Date.now()}`,
+    }
+    set((state) => ({ appointments: [...state.appointments, newAppointment] }))
+    try {
+      await fetch("/api/appointments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newAppointment),
+      })
+    } catch (e) {
+      console.error("Erro ao salvar agendamento no banco de dados:", e)
+    }
+  },
+
+  updateAppointmentStatus: async (id, status) => {
     set((state) => ({
       appointments: state.appointments.map((a) => (a.id === id ? { ...a, status } : a)),
-    })),
+    }))
+    try {
+      await fetch("/api/appointments", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status }),
+      })
+    } catch (e) {
+      console.error("Erro ao atualizar status do agendamento no banco de dados:", e)
+    }
+  },
 
-  deleteAppointment: (id) =>
+  deleteAppointment: async (id) => {
     set((state) => ({
       appointments: state.appointments.filter((a) => a.id !== id),
-    })),
+    }))
+    try {
+      await fetch(`/api/appointments?id=${id}`, {
+        method: "DELETE",
+      })
+    } catch (e) {
+      console.error("Erro ao excluir agendamento no banco de dados:", e)
+    }
+  },
 
-  addTransaction: (transaction) =>
-    set((state) => {
-      const newTransaction: FinanceTransaction = {
-        ...transaction,
-        id: `tx-${Date.now()}`,
-      }
-      return { transactions: [newTransaction, ...state.transactions] }
-    }),
+  addTransaction: async (transaction) => {
+    const newTransaction: FinanceTransaction = {
+      ...transaction,
+      id: `tx-${Date.now()}`,
+    }
+    set((state) => ({ transactions: [newTransaction, ...state.transactions] }))
+    try {
+      await fetch("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newTransaction),
+      })
+    } catch (e) {
+      console.error("Erro ao salvar transação no banco de dados:", e)
+    }
+  },
 
-  updateTransactionStatus: (id, status) =>
+  updateTransactionStatus: async (id, status) => {
+    const paymentDate = status === "pago" ? new Date().toISOString().split("T")[0] : undefined
     set((state) => ({
       transactions: state.transactions.map((t) => {
         if (t.id === id) {
           return {
             ...t,
             status,
-            paymentDate: status === "pago" ? new Date().toISOString().split("T")[0] : t.paymentDate,
+            paymentDate: status === "pago" ? paymentDate : t.paymentDate,
           }
         }
         return t
       }),
-    })),
+    }))
+    try {
+      await fetch("/api/finance", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, status, paymentDate }),
+      })
+    } catch (e) {
+      console.error("Erro ao atualizar transação no banco de dados:", e)
+    }
+  },
 
-  addStockItem: (item) =>
+  addStockItem: async (item) => {
+    const newStockItem: StockItem = {
+      ...item,
+      id: `stk-${Date.now()}`,
+    }
+    set((state) => ({ stockItems: [...state.stockItems, newStockItem] }))
+    try {
+      await fetch("/api/stock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newStockItem),
+      })
+    } catch (e) {
+      console.error("Erro ao salvar item no banco de dados:", e)
+    }
+  },
+
+  updateStockItem: async (id, data) => {
+    let updated: StockItem | null = null
     set((state) => {
-      const newStockItem: StockItem = {
-        ...item,
-        id: `stk-${Date.now()}`,
-      }
-      return { stockItems: [...state.stockItems, newStockItem] }
-    }),
-
-  updateStockItem: (id, data) =>
-    set((state) => ({
-      stockItems: state.stockItems.map((item) => {
+      const updatedStock = state.stockItems.map((item) => {
         if (item.id === id) {
-          const updated = { ...item, ...data }
+          const itemUpdated = { ...item, ...data }
           // Recalcula status baseado no estoque atual vs mínimo
-          if (updated.currentStock <= 0 || updated.currentStock <= updated.minStock / 2) {
-            updated.status = "critico"
-          } else if (updated.currentStock <= updated.minStock) {
-            updated.status = "alerta"
+          if (itemUpdated.currentStock <= 0 || itemUpdated.currentStock <= itemUpdated.minStock / 2) {
+            itemUpdated.status = "critico"
+          } else if (itemUpdated.currentStock <= itemUpdated.minStock) {
+            itemUpdated.status = "alerta"
           } else {
-            updated.status = "normal"
+            itemUpdated.status = "normal"
           }
-          return updated
+          updated = itemUpdated
+          return itemUpdated
         }
         return item
-      }),
-    })),
+      })
+      return { stockItems: updatedStock }
+    })
+    if (updated) {
+      try {
+        await fetch("/api/stock", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        })
+      } catch (e) {
+        console.error("Erro ao atualizar item de estoque no banco de dados:", e)
+      }
+    }
+  },
 
-  deleteStockItem: (id) =>
+  deleteStockItem: async (id) => {
     set((state) => ({
       stockItems: state.stockItems.filter((item) => item.id !== id),
-    })),
+    }))
+    try {
+      await fetch(`/api/stock?id=${id}`, {
+        method: "DELETE",
+      })
+    } catch (e) {
+      console.error("Erro ao excluir item de estoque no banco de dados:", e)
+    }
+  },
 
-  addTeamMember: (member) =>
+  addTeamMember: async (member) => {
+    const newMember: TeamMember = {
+      ...member,
+      id: `mem-${Date.now()}`,
+    }
+    set((state) => ({ teamMembers: [...state.teamMembers, newMember] }))
+    try {
+      await fetch("/api/team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newMember),
+      })
+    } catch (e) {
+      console.error("Erro ao salvar colaborador no banco de dados:", e)
+    }
+  },
+
+  updateTeamMember: async (id, data) => {
+    let updated: TeamMember | null = null
     set((state) => {
-      const newMember: TeamMember = {
-        ...member,
-        id: `mem-${Date.now()}`,
+      const updatedTeam = state.teamMembers.map((m) => {
+        if (m.id === id) {
+          updated = { ...m, ...data }
+          return updated
+        }
+        return m
+      })
+      return { teamMembers: updatedTeam }
+    })
+    if (updated) {
+      try {
+        await fetch("/api/team", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updated),
+        })
+      } catch (e) {
+        console.error("Erro ao atualizar colaborador no banco de dados:", e)
       }
-      return { teamMembers: [...state.teamMembers, newMember] }
-    }),
-
-  updateTeamMember: (id, data) =>
-    set((state) => ({
-      teamMembers: state.teamMembers.map((m) => (m.id === id ? { ...m, ...data } : m)),
-    })),
+    }
+  },
 }))
