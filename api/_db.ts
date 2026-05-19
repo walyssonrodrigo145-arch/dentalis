@@ -1,7 +1,12 @@
 import pg from "pg"
 const { Pool } = pg
 
-const connectionString = process.env.DATABASE_URL
+const rawConnectionString = process.env.DATABASE_URL
+let connectionString = rawConnectionString
+
+if (connectionString && connectionString.includes("sslmode=")) {
+  connectionString = connectionString.replace(/[\?&]sslmode=[^&]+/g, "")
+}
 
 export const pool = new Pool({
   connectionString,
